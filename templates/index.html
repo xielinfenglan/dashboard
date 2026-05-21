@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>讲解订单系统</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; margin:0; padding: 16px; padding-bottom: 100px; background: #f5f5f5; }
+    .card { background: white; border-radius: 16px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    input, button, select { font-size: 16px; padding: 12px; border-radius: 8px; border:1px solid #ddd; width: 100%; }
+    button { background: #007aff; color: white; border: none; font-weight: bold; margin-top: 8px; cursor: pointer; }
+    button:active { opacity: 0.8; }
+    .order-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom:1px solid #eee; }
+    .cancelled { opacity: 0.5; text-decoration: line-through; }
+    .cancel-btn { background: #ff3b30; color: white; padding: 6px 12px; border-radius: 6px; font-size: 14px; border: none; width: auto; }
+    .total-bar { position: fixed; bottom: 0; left: 0; right: 0; background: white; padding: 16px; box-shadow: 0 -2px 8px rgba(0,0,0,0.1); display: flex; justify-content: space-around; z-index: 100; }
+    .total-item { text-align: center; }
+    .total-label { font-size: 14px; color: #666; }
+    .total-amount { font-size: 24px; font-weight: bold; color: #007aff; }
+    .spot-row, .assignee-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .spot-row label, .assignee-row label { font-weight: bold; white-space: nowrap; }
+    .spot-row select, .assignee-row select { flex: 1; }
+    .price-display { font-size: 18px; font-weight: bold; color: #007aff; white-space: nowrap; min-width: 60px; text-align: right; }
+    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+    .status-active { background: #e8f5e9; color: #2e7d32; }
+    .status-cancelled { background: #fce4ec; color: #c62828; }
+    .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .header-row h2 { margin: 0; }
+    .small-btn { background: #eee; color: #333; border: none; border-radius: 8px; padding: 8px 12px; font-size: 14px; width: auto; margin: 0; }
+    .small-btn.danger { background: #ff3b30; color: white; padding: 4px 8px; font-size: 12px; margin: 0; }
+    .small-btn.edit { background: #007aff; color: white; padding: 4px 8px; font-size: 12px; margin: 0; }
+    .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #333; color: white; padding: 10px 24px; border-radius: 20px; font-size: 14px; z-index: 999; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+    .toast.success { background: #2e7d32; }
+    .toast.error { background: #c62828; }
+    .spot-list { font-size: 13px; color: #666; margin-top: 4px; }
+    .spot-item { display: inline-block; background: #f0f0f0; border-radius: 6px; padding: 2px 8px; margin: 2px; }
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 200; justify-content: center; align-items: center; }
+    .modal-overlay.show { display: flex; }
+    .modal-box { background: white; border-radius: 16px; padding: 20px; width: 90%; max-width: 360px; }
+    .modal-box h3 { margin: 0 0 16px 0; }
+    .modal-box .btn-row { display: flex; gap: 8px; }
+    .modal-box .btn-row button { flex: 1; }
+    .modal-box .btn-row .cancel { background: #999; }
+  </style>
+</head>
+<body>
+  <div class="toast" id="toast"></div>
+
+  <!-- ── 录单卡片 ── -->
+  <div class="card">
+    <div class="header-row">
+      <h2>📝 快速录单</h2>
+      <button class="small-btn" onclick="toggleSpotManager()">⚙️ 管理景点</button>
+    </div>
+
+    <div class="spot-row" id="spotRow" style="display:none;">
+      <label>景点：</label>
+      <select id="spotSelect" onchange="onSpotChange()">
+        <option value="">-- 选景点 --</option>
+      </select>
+      <span class="price-display" id="priceDisplay">¥--</span>
+    </div>
+
+    <div id="spotAutoBadge" style="display:none; background:#e3f2fd; border-radius:8px; padding:8px 12px; margin-bottom:12px; font-size:14px;"></div>
+
+    <div id="totalPreview" style="display:none; background:#e8f5e9; border-radius:8px; padding:10px; margin-bottom:12px; text-align:center; font-size:15px;">
+      💰 <strong>总价：<span id="totalPrice" style="color:#007aff;font-size:20px;">¥0</span></strong>
+      <span style="color:#666;font-size:13px;">（<span id="calcDetail"></span>）</span>
+    </div>
+
+    <div class="assignee-row">
+      <label>接单人：</label>
+      <select id="assigneeSelect">
+        <option value="张三">张三</option>
+        <option value="李四">李四</option>
+      </select>
+    </div>
+
+    <input type="text" id="rawInput" placeholder="例：5.19下午2点 龙门石窟 2人 138xxxx" oninput="onInputChange()" />
+    <button onclick="submitOrder()">✅ 提交并通知群</button>
+    <p style="font-size:12px; color:#666; margin-bottom:0;">直接输景点名即可自动识别，填人数自动算总价</p>
+  </div>
+
+  <!-- ── 订单列表 ── -->
+  <div class="card">
+    <div class="header-row">
+      <h2>📋 订单列表</h2>
+      <div style="display:flex;gap:6px;">
+        <button class="small-btn" id="toggleCancelledBtn" onclick="toggleShowCancelled()">👁 显示已取消</button>
+        <button class="small-btn" onclick="loadOrders()">🔄 刷新</button>
+      </div>
+    </div>
+    <div id="orderList">加载中...</div>
+  </div>
+
+  <!-- ── 底部合计栏 ── -->
+  <div class="total-bar">
+    <div class="total-item">
+      <div class="total-label" id="personALabel">张三 应付</div>
+      <div class="total-amount" id="totalA">¥0.00</div>
+    </div>
+    <div class="total-item">
+      <div class="total-label" id="personBLabel">李四 应付</div>
+      <div class="total-amount" id="totalB">¥0.00</div>
+    </div>
+  </div>
+
+  <!-- ── 景点管理弹窗 ── -->
+  <div class="modal-overlay" id="spotModal">
+    <div class="modal-box">
+      <h3>⚙️ 景点管理</h3>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:14px;color:#666;">景点名</label>
+        <input type="text" id="newSpotName" placeholder="如：龙门石窟" style="margin-bottom:8px;" />
+        <label style="font-size:14px;color:#666;">结算单价</label>
+        <input type="number" id="newSpotPrice" step="0.01" placeholder="如：80" />
+        <button onclick="addSpot()" style="margin-top:8px;">➕ 添加景点</button>
+      </div>
+      <div id="spotListContainer" class="spot-list"></div>
+      <div class="btn-row" style="margin-top:16px;">
+        <button class="cancel" onclick="toggleSpotManager()">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ─── API ───
+    const API = {
+      orders: {
+        list:   () => fetch('/api/orders').then(r => r.json()),
+        create: (data) => fetch('/api/orders', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) }).then(r => r.json()),
+        cancel: (id) => fetch('/api/orders/' + id + '/cancel', { method:'POST' }).then(r => r.json()),
+      }
+    };
+
+    const PERSON_A = '张三';
+    const PERSON_B = '李四';
+    document.getElementById('personALabel').textContent = PERSON_A + ' 应付';
+    document.getElementById('personBLabel').textContent = PERSON_B + ' 应付';
+
+    // ─── 景点管理（localStorage） ───
+    const DEFAULT_SPOTS = [
+      { name: '龙门石窟', price: 80 },
+      { name: '白马寺', price: 80 },
+      { name: '应天门', price: 80 },
+      { name: '洛阳博物馆', price: 100 },
+      { name: '关林', price: 60 },
+      { name: '明堂天堂', price: 80 },
+    ];
+
+    function loadSpots() {
+      try {
+        const saved = localStorage.getItem('spots');
+        return saved ? JSON.parse(saved) : [...DEFAULT_SPOTS];
+      } catch (e) {
+        return [...DEFAULT_SPOTS];
+      }
+    }
+
+    function saveSpots(spots) {
+      localStorage.setItem('spots', JSON.stringify(spots));
+    }
+
+    function renderSpotSelect() {
+      const spots = loadSpots();
+      const sel = document.getElementById('spotSelect');
+      sel.innerHTML = '<option value="">-- 选景点 --</option>' +
+        spots.map((s, i) => `<option value="${i}" data-price="${s.price}">${s.name}（¥${s.price}）</option>`).join('');
+      document.getElementById('priceDisplay').textContent = '¥--';
+    }
+
+    function onSpotChange() {
+      const sel = document.getElementById('spotSelect');
+      const idx = sel.value;
+      if (idx === '') {
+        document.getElementById('priceDisplay').textContent = '¥--';
+        document.getElementById('totalPreview').style.display = 'none';
+        return;
+      }
+      const spots = loadSpots();
+      const s = spots[parseInt(idx)];
+      document.getElementById('priceDisplay').textContent = '¥' + s.price + '/人';
+      updateTotalPreview();
+    }
+
+    function onInputChange() {
+      const raw = document.getElementById('rawInput').value.trim();
+      const parsed = parseInput(raw);
+      const badge = document.getElementById('spotAutoBadge');
+      const spotRow = document.getElementById('spotRow');
+
+      if (parsed.spot) {
+        spotRow.style.display = 'none';
+        badge.style.display = 'block';
+        badge.innerHTML = `📍 <strong>${parsed.spot}</strong>（¥${parsed.spotPrice}/人）— 已自动识别 <a href="javascript:void(0)" onclick="showSpotPicker()" style="color:#007aff;font-size:12px;">手动改</a>`;
+      } else if (!parsed.spot && raw.length > 0) {
+        spotRow.style.display = 'flex';
+        badge.style.display = 'none';
+      } else {
+        spotRow.style.display = 'none';
+        badge.style.display = 'none';
+      }
+      updateTotalPreview();
+    }
+
+    function showSpotPicker() {
+      document.getElementById('spotRow').style.display = 'flex';
+      document.getElementById('spotAutoBadge').style.display = 'none';
+    }
+
+    function getEffectiveSpot() {
+      const raw = document.getElementById('rawInput').value.trim();
+      const parsed = parseInput(raw);
+      if (parsed.spot) {
+        return { name: parsed.spot, price: parsed.spotPrice };
+      }
+      const sel = document.getElementById('spotSelect');
+      const idx = sel.value;
+      if (idx !== '') {
+        const spots = loadSpots();
+        return spots[parseInt(idx)];
+      }
+      return null;
+    }
+
+    function updateTotalPreview() {
+      const spot = getEffectiveSpot();
+      const raw = document.getElementById('rawInput').value.trim();
+      const parsed = parseInput(raw);
+      const preview = document.getElementById('totalPreview');
+
+      if (spot && parsed.people && parsed.people > 0) {
+        const total = spot.price * parsed.people;
+        document.getElementById('totalPrice').textContent = '¥' + total.toFixed(2);
+        document.getElementById('calcDetail').textContent = '¥' + spot.price + '/人 × ' + parsed.people + '人';
+        preview.style.display = 'block';
+      } else if (spot) {
+        preview.style.display = 'block';
+        document.getElementById('totalPrice').textContent = '¥' + spot.price.toFixed(2);
+        document.getElementById('calcDetail').textContent = '¥' + spot.price + '/人（未填人数，暂按1人算）';
+      } else {
+        preview.style.display = 'none';
+      }
+    }
+
+    function getSelectedSpot() {
+      const sel = document.getElementById('spotSelect');
+      const idx = sel.value;
+      if (idx === '') return null;
+      const spots = loadSpots();
+      return spots[parseInt(idx)];
+    }
+
+    // ─── 景点管理弹窗 ───
+    function toggleSpotManager() {
+      const modal = document.getElementById('spotModal');
+      modal.classList.toggle('show');
+      if (modal.classList.contains('show')) renderSpotManager();
+    }
+
+    function renderSpotManager() {
+      const spots = loadSpots();
+      const container = document.getElementById('spotListContainer');
+      container.innerHTML = spots.map((s, i) => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee;">
+          <span>${s.name} — ¥${s.price}</span>
+          <button class="small-btn danger" onclick="deleteSpot(${i})">删除</button>
+        </div>
+      `).join('');
+    }
+
+    window.addSpot = function() {
+      const name = document.getElementById('newSpotName').value.trim();
+      const price = parseFloat(document.getElementById('newSpotPrice').value);
+      if (!name) return showToast('请输入景点名', 'error');
+      if (isNaN(price) || price <= 0) return showToast('请输入有效价格', 'error');
+
+      const spots = loadSpots();
+      spots.push({ name, price });
+      saveSpots(spots);
+      document.getElementById('newSpotName').value = '';
+      document.getElementById('newSpotPrice').value = '';
+      renderSpotManager();
+      renderSpotSelect();
+      showToast('景点已添加', 'success');
+    };
+
+    window.deleteSpot = function(idx) {
+      const spots = loadSpots();
+      spots.splice(idx, 1);
+      saveSpots(spots);
+      renderSpotManager();
+      renderSpotSelect();
+      showToast('已删除', 'success');
+    };
+
+    // ─── Toast ───
+    function showToast(msg, type) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'toast ' + type + ' show';
+      clearTimeout(t._timer);
+      t._timer = setTimeout(() => { t.className = 'toast'; }, 2000);
+    }
+
+    // ─── 解析输入 ───
+    function parseInput(raw) {
+      const result = { date: '', spot: '', spotPrice: 0, people: null, phone: '' };
+      const parts = raw.trim().split(/\s+/);
+      if (parts.length >= 1) result.date = parts[0];
+
+      const spots = loadSpots();
+      for (const s of spots) {
+        if (raw.includes(s.name)) {
+          result.spot = s.name;
+          result.spotPrice = s.price;
+          break;
+        }
+      }
+
+      const peopleMatch = raw.match(/(\d+)人/);
+      if (peopleMatch) result.people = parseInt(peopleMatch[1]);
+      const phoneMatch = raw.match(/1\d{10}/);
+      if (phoneMatch) result.phone = phoneMatch[0];
+      return result;
+    }
+
+    // ─── 订单加载 ───
+    let lastOrderCount = 0;
+    let showCancelled = false;
+
+    window.toggleShowCancelled = function() {
+      showCancelled = !showCancelled;
+      const btn = document.getElementById('toggleCancelledBtn');
+      btn.textContent = showCancelled ? '🙈 隐藏已取消' : '👁 显示已取消';
+      loadOrders();
+    };
+
+    async function loadOrders() {
+      try {
+        const orders = await API.orders.list();
+        lastOrderCount = orders.length;
+        renderOrders(orders);
+      } catch (e) {
+        console.error('加载失败', e);
+        document.getElementById('orderList').innerHTML = '<p style="color:red;">加载失败，请检查服务器</p>';
+      }
+    }
+
+    function renderOrders(orders) {
+      const list = document.getElementById('orderList');
+
+      const visible = showCancelled ? orders : orders.filter(o => o.status !== 'cancelled');
+      const cancelledCount = orders.filter(o => o.status === 'cancelled').length;
+
+      if (!visible.length) {
+        const msg = orders.length === 0
+          ? '<p style="color:#999;text-align:center;padding:30px;">暂无订单，赶快录入吧 🎉</p>'
+          : '<p style="color:#999;text-align:center;padding:30px;">无活跃订单' + (cancelledCount > 0 ? '（' + cancelledCount + '条已取消，点击👁查看）' : '') + '</p>';
+        list.innerHTML = msg;
+        document.getElementById('totalA').textContent = '¥0.00';
+        document.getElementById('totalB').textContent = '¥0.00';
+        return;
+      }
+
+      list.innerHTML = visible.map(o => {
+        const isCancelled = o.status === 'cancelled';
+        const assigneeText = o.assignee ? ` <span class="status-badge status-active">${o.assignee}</span>` : '';
+        const statusBadge = isCancelled
+          ? ' <span class="status-badge status-cancelled">已取消</span>'
+          : '';
+        return `<div class="order-item ${isCancelled ? 'cancelled' : ''}">
+          <div style="flex:1;">
+            <strong>${o.service_date}</strong> ${o.spot} · ${o.people_count || '?'}人${assigneeText}${statusBadge}<br>
+            <small style="color:#999;">📞 ${o.phone || '无'}</small>
+          </div>
+          <div style="text-align:right;margin-left:12px;white-space:nowrap;">
+            <span style="font-weight:bold;color:#007aff;">¥${(o.price||0).toFixed(2)}</span>
+            ${o.unit_price && o.people_count ? `<br><small style="color:#999;">¥${o.unit_price}×${o.people_count}人</small>` : ''}
+            ${!isCancelled ? `<br><button class="cancel-btn" id="cancelBtn${o.id}" onclick="cancelOrder(${o.id})">取消</button>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+
+      const active = orders.filter(o => o.status !== 'cancelled');
+      const totalA = active.filter(o => o.assignee === PERSON_A).reduce((s, o) => s + (o.price||0), 0);
+      const totalB = active.filter(o => o.assignee === PERSON_B).reduce((s, o) => s + (o.price||0), 0);
+      document.getElementById('totalA').textContent = '¥' + totalA.toFixed(2);
+      document.getElementById('totalB').textContent = '¥' + totalB.toFixed(2);
+    }
+
+    // ─── 提交订单 ───
+    window.submitOrder = async function() {
+      const raw = document.getElementById('rawInput').value.trim();
+      if (!raw) return showToast('请输入订单信息', 'error');
+
+      const parsed = parseInput(raw);
+      if (!parsed.date) return showToast('请输入日期（如 5.19下午2点）', 'error');
+
+      const spot = getEffectiveSpot();
+      if (!spot) return showToast('未识别到景点，请输入景点名或手动选择', 'error');
+
+      const assignee = document.getElementById('assigneeSelect').value;
+
+      try {
+        const totalPrice = spot.price * (parsed.people || 1);
+        const result = await API.orders.create({
+          service_date: parsed.date,
+          spot: spot.name,
+          people_count: parsed.people,
+          phone: parsed.phone,
+          price: totalPrice,
+          unit_price: spot.price,
+          assignee: assignee,
+          raw_input: raw
+        });
+
+        if (result.ok) {
+          document.getElementById('rawInput').value = '';
+          showToast('✅ 已录入，通知已发送', 'success');
+          await loadOrders();
+        } else {
+          showToast('录入失败：' + (result.error || '未知错误'), 'error');
+        }
+      } catch (e) {
+        showToast('网络错误，请重试', 'error');
+      }
+    };
+
+    // ─── 取消订单 ───
+    let cancellingIds = new Set();
+
+    window.cancelOrder = async function(id) {
+      if (cancellingIds.has(id)) return;
+      if (!confirm('确认取消此订单？取消后将通知旅行社群。')) return;
+
+      cancellingIds.add(id);
+      const btn = document.getElementById('cancelBtn' + id);
+      if (btn) { btn.textContent = '取消中...'; btn.disabled = true; btn.style.opacity = '0.6'; }
+
+      console.log('[cancel] 开始取消订单 id=' + id);
+      try {
+        const result = await API.orders.cancel(id);
+        console.log('[cancel] API返回:', result);
+        if (result.ok) {
+          showToast('✅ 已取消，通知已发送', 'success');
+          await loadOrders();
+          console.log('[cancel] 界面已刷新');
+        } else {
+          showToast('取消失败：' + (result.error || '未知错误'), 'error');
+          if (btn) { btn.textContent = '取消'; btn.disabled = false; btn.style.opacity = '1'; }
+        }
+      } catch (e) {
+        console.error('[cancel] 错误:', e);
+        showToast('网络错误，请刷新重试', 'error');
+        if (btn) { btn.textContent = '取消'; btn.disabled = false; btn.style.opacity = '1'; }
+      } finally {
+        cancellingIds.delete(id);
+      }
+    };
+
+    // ─── 启动 ───
+    renderSpotSelect();
+    loadOrders();
+    setInterval(loadOrders, 30000);
+
+    document.getElementById('spotModal').addEventListener('click', function(e) {
+      if (e.target === this) toggleSpotManager();
+    });
+  </script>
+</body>
+</html>
